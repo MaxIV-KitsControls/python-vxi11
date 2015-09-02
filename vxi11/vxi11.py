@@ -438,18 +438,23 @@ class Instrument(object):
 
     def close(self):
         "Close connection"
-        if self.client is not None:
+        if self.client is None:
+            return
+        try:
             self.client.destroy_link(self.link)
+        except rpc.RPCError:
+            pass
+        finally:
             self.client.close()
-        self.link = None
-        self.client = None
+            self.link = None
+            self.client = None
 
     def handle_timeout(func):
         """Decorator to handle instrument timeout."""
         @wraps(func)
         def wrapper(self, *args, **kwargs):
             # Default behavior
-            no_control =  self.callback_timeout >= self.instrument_timeout
+            no_control = self.callback_timeout >= self.instrument_timeout
             # Init time
             start = time()
             timeout_s = self.instrument_timeout * 0.001
@@ -664,6 +669,3 @@ class Instrument(object):
 
         if error:
             raise Vxi11Exception(error, 'unlock')
-
-
-
