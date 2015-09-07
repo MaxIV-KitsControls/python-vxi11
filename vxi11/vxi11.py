@@ -406,10 +406,10 @@ class Instrument(object):
 
         # Client
         if self.connection_timeout is None:
-            self.client = CoreClient(host)
+            self.client = CoreClient(self.host)
         else:
             timeout_s = self.connection_timeout * 0.001
-            self.client = CoreClient(host, timeout_s)
+            self.client = CoreClient(self.host, timeout_s)
 
         self.link = None
         self.max_recv_size = 0
@@ -423,10 +423,10 @@ class Instrument(object):
     def open(self):
         "Open connection to VXI-11 instrument"
         if self.client is None and self.connection_timeout is None:
-            self.client = CoreClient(host)
+            self.client = CoreClient(self.host)
         elif self.client is None:
             timeout_s = self.connection_timeout * 0.001
-            self.client = CoreClient(host, timeout_s)
+            self.client = CoreClient(self.host, timeout_s)
 
         error, link, abort_port, max_recv_size = self.client.create_link(self.client_id, 0, self.lock_timeout, self.name.encode("utf-8"))
 
