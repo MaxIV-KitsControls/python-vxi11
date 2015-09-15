@@ -441,7 +441,8 @@ class Instrument(object):
         if self.client is None:
             return
         try:
-            self.client.destroy_link(self.link)
+            if self.link is not None:
+                self.client.destroy_link(self.link)
         except rpc.RPCError:
             pass
         finally:
