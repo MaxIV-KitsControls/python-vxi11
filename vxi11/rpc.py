@@ -222,7 +222,8 @@ def sendfrag(sock, last, frag):
     sock.send(header + frag)
 
 def sendrecord(sock, record):
-    sendfrag(sock, 1, record)
+    if len(record) > 0:
+        sendfrag(sock, 1, record)
 
 def recvfrag(sock):
     header = sock.recv(4)
@@ -266,13 +267,21 @@ class RawTCPClient(Client):
     def do_call(self):
         call = self.packer.get_buf()
         sendrecord(self.sock, call)
-        reply = recvrecord(self.sock)
-        u = self.unpacker
-        u.reset(reply)
-        xid, verf = u.unpack_replyheader()
-        if xid != self.lastxid:
-            # Can't really happen since this is TCP...
-            raise RPCError('wrong xid in reply %r instead of %r' % (xid, self.lastxid))
+        while True:
+            reply = recvrecord(self.sock)
+            u = self.unpacker
+            u.reset(reply)
+            xid, verf = u.unpack_replyheader()
+            if xid == self.lastxid:
+                # xid matches, we're done
+                return
+            elif xid < self.lastxid:
+                # Stale data in buffer due to interruption
+                # Discard and fetch another record
+                continue
+            else:
+                # xid larger than expected - packet from the future?
+                raise RPCError('wrong xid in reply %r instead of %r' % (xid, self.lastxid))
 
 
 # Client using UDP to a specific port
@@ -505,10 +514,11 @@ class BroadcastUDPPortMapperClient(PartialPortMapperClient, RawBroadcastUDPClien
 
 class TCPClient(RawTCPClient):
 
-    def __init__(self, host, prog, vers, timeout=None):
-        pmap = TCPPortMapperClient(host, timeout=timeout)
-        port = pmap.get_port((prog, vers, IPPROTO_TCP, 0))
-        pmap.close()
+    def __init__(self, host, prog, vers, port=0, timeout=None):
+        if port == 0:
+            pmap = TCPPortMapperClient(host, timeout=timeout)
+            port = pmap.get_port((prog, vers, IPPROTO_TCP, 0))
+            pmap.close()
         if port == 0:
             raise RPCError('program not registered')
         RawTCPClient.__init__(self, host, prog, vers, port, timeout=timeout)
@@ -516,10 +526,11 @@ class TCPClient(RawTCPClient):
 
 class UDPClient(RawUDPClient):
 
-    def __init__(self, host, prog, vers):
-        pmap = UDPPortMapperClient(host)
-        port = pmap.get_port((prog, vers, IPPROTO_UDP, 0))
-        pmap.close()
+    def __init__(self, host, prog, vers, port=0):
+        if port == 0:
+            pmap = UDPPortMapperClient(host)
+            port = pmap.get_port((prog, vers, IPPROTO_UDP, 0))
+            pmap.close()
         if port == 0:
             raise RPCError('program not registered')
         RawUDPClient.__init__(self, host, prog, vers, port)
@@ -581,20 +592,27 @@ class Server:
         self.prog = prog
         self.vers = vers
         self.port = port # Should normally be 0 for random port
-        self.port = port
+        self.registered = False
         self.addpackers()
+
+    def __del__(self):
+        # make sure to unregister on delete
+        if self.registered:
+            self.unregister()
 
     def register(self):
         mapping = self.prog, self.vers, self.prot, self.port
         p = TCPPortMapperClient(self.host)
         if not p.set(mapping):
             raise RPCError('register failed')
+        self.registered = True
 
     def unregister(self):
         mapping = self.prog, self.vers, self.prot, self.port
         p = TCPPortMapperClient(self.host)
         if not p.unset(mapping):
             raise RPCError('unregister failed')
+        self.registered = False
 
     def handle(self, call):
         # Don't use unpack_header but parse the header piecewise
@@ -673,6 +691,7 @@ class TCPServer(Server):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.prot = IPPROTO_TCP
         self.sock.bind((self.host, self.port))
+        self.host, self.port = self.sock.getsockname()
 
     def loop(self):
         self.sock.listen(0)
@@ -705,7 +724,7 @@ class TCPServer(Server):
         # Wait for deceased children
         try:
             while 1:
-                pid, sts = os.waitpid(0, 1)
+                pid, sts = os.waitpid(0, os.WNOHANG)
         except os.error:
             pass
         pid = None
@@ -732,6 +751,7 @@ class UDPServer(Server):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.prot = IPPROTO_UDP
         self.sock.bind((self.host, self.port))
+        self.host, self.port = self.sock.getsockname()
 
     def loop(self):
         while 1:
@@ -757,5 +777,3 @@ def test(host = ''):
         else: st += "%d " % prot
         st += "%d" % port
         print(st)
-
-

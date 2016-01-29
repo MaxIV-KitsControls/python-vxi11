@@ -1,6 +1,6 @@
 """Python VXI-11 driver
 
-Copyright (c) 2012-2014 Alex Forencich and Michael Walle
+Copyright (c) 2012-2016 Alex Forencich and Michael Walle
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,6 @@ THE SOFTWARE.
 from timeit import default_timer as time
 from functools import wraps
 from . import rpc
-import socket
 import random
 import re
 
@@ -216,13 +215,115 @@ class Packer(rpc.Packer):
         self.pack_int(datasize)
         self.pack_opaque(data_in)
 
+    def pack_device_error(self, error):
+        self.pack_int(error)
+
+    def pack_device_srq_parms(self, params):
+        handle = params
+        self.pack_opaque(handle)
+
+    def pack_create_link_resp(self, params):
+        error, link, abort_port, max_recv_size = params
+        self.pack_int(error)
+        self.pack_int(link)
+        self.pack_uint(abort_port)
+        self.pack_uint(max_recv_size)
+
+    def pack_device_write_resp(self, params):
+        error, size = params
+        self.pack_int(error)
+        self.pack_uint(size)
+
+    def pack_device_read_resp(self, params):
+        error, reason, data = params
+        self.pack_int(error)
+        self.pack_int(reason)
+        self.pack_opaque(data)
+
+    def pack_device_read_stb_resp(self, params):
+        error, stb = params
+        self.pack_int(error)
+        self.pack_uint(stb)
+
+    def pack_device_docmd_resp(self, params):
+        error, data_out = params
+        self.pack_int(error)
+        self.pack_opaque(data_out)
+
 
 class Unpacker(rpc.Unpacker):
     def unpack_device_link(self):
         return self.unpack_int()
 
+    def unpack_create_link_parms(self):
+        id = self.unpack_int()
+        lock_device = self.unpack_bool()
+        lock_timeout = self.unpack_uint()
+        device = self.unpack_string()
+        return id, lock_device, lock_timeout, device
+
+    def unpack_device_write_parms(self):
+        link = self.unpack_int()
+        timeout = self.unpack_uint()
+        lock_timeout = self.unpack_uint()
+        flags = self.unpack_int()
+        data = self.unpack_opaque()
+        return link, timeout, lock_timeout, flags, data
+
+    def unpack_device_read_parms(self):
+        link = self.unpack_int()
+        request_size = self.unpack_uint()
+        timeout = self.unpack_uint()
+        lock_timeout = self.unpack_uint()
+        flags = self.unpack_int()
+        term_char = self.unpack_int()
+        return link, request_size, timeout, lock_timeout, flags, term_char
+
+    def unpack_device_generic_parms(self):
+        link = self.unpack_int()
+        flags = self.unpack_int()
+        lock_timeout = self.unpack_uint()
+        timeout = self.unpack_uint()
+        return link, flags, lock_timeout, timeout
+
+    def unpack_device_remote_func_parms(self):
+        host_addr = self.unpack_uint()
+        host_port = self.unpack_uint()
+        prog_num = self.unpack_uint()
+        prog_vers = self.unpack_uint()
+        prog_family = self.unpack_int()
+        return host_addr, host_port, prog_num, prog_vers, prog_family
+
+    def unpack_device_enable_srq_parms(self):
+        link = self.unpack_int()
+        enable = self.unpack_bool()
+        handle = self.unpack_opaque()
+        return link, enable, handle
+
+    def unpack_device_lock_parms(self):
+        link = self.unpack_int()
+        flags = self.unpack_int()
+        lock_timeout = self.unpack_uint()
+        return link, flags, lock_timeout
+
+    def unpack_device_docmd_parms(self):
+        link = self.unpack_int()
+        flags = self.unpack_int()
+        timeout = self.unpack_uint()
+        lock_timeout = self.unpack_uint()
+        cmd = self.unpack_int()
+        network_order = self.unpack_bool()
+        datasize = self.unpack_int()
+        data_in = self.unpack_opaque()
+        return (link, flags, timeout, lock_timeout, cmd,
+                network_order, datasize, data_in)
+
     def unpack_device_error(self):
         return self.unpack_int()
+
+    def unpack_device_srq_params(self):
+        handle = self.unpack_opaque()
+        return handle
 
     def unpack_create_link_resp(self):
         error = self.unpack_int()
@@ -258,11 +359,12 @@ class Unpacker(rpc.Unpacker):
 
 
 class CoreClient(rpc.TCPClient):
-    def __init__(self, host, timeout=None):
+
+    def __init__(self, host, port=0, timeout=None):
         self.packer = Packer()
         self.unpacker = Unpacker('')
         rpc.TCPClient.__init__(self, host, DEVICE_CORE_PROG, DEVICE_CORE_VERS,
-                               timeout=timeout)
+                               port=port, timeout=timeout)
 
     def create_link(self, id, lock_device, lock_timeout, name):
         params = (id, lock_device, lock_timeout, name)
@@ -347,12 +449,26 @@ class CoreClient(rpc.TCPClient):
                          prog_family):
         params = (host_addr, host_port, prog_num, prog_vers, prog_family)
         return self.make_call(CREATE_INTR_CHAN, params,
-                              self.packer.pack_device_docmd_parms,
+                              self.packer.pack_device_remote_func_parms,
                               self.unpacker.unpack_device_error)
 
     def destroy_intr_chan(self):
         return self.make_call(DESTROY_INTR_CHAN, None,
                               None,
+                              self.unpacker.unpack_device_error)
+
+
+class AbortClient(rpc.TCPClient):
+    def __init__(self, host, port=0, timeout=None):
+        self.packer = Packer()
+        self.unpacker = Unpacker('')
+        rpc.TCPClient.__init__(
+            self, host, DEVICE_ASYNC_PROG, DEVICE_ASYNC_VERS,
+            port=port, timeout=timeout)
+
+    def device_abort(self, link):
+        return self.make_call(DEVICE_ABORT, link,
+                              self.packer.pack_device_link,
                               self.unpacker.unpack_device_error)
 
 
@@ -364,9 +480,9 @@ class Instrument(object):
         cliend_id (int or None):          ID fot the client
         term_char (char or None):         A custom term character
         host (str):                       Host name of the intrument
-        instrument_timeout (int):         Timeout in ms for the instrument
-        connection_timeout (int or None): Timeout in ms for the socket
-        callback_timeout (int or None):   Timeout in ms to get callbacks
+        instrument_timeout (int):         Timeout in seconds for the instrument
+        connection_timeout (int or None): Timeout in seconds for the socket
+        callback_timeout (int or None):   Timeout in seconds to get callbacks
                                           while waiting for a response.
         callback (callable or None):      Called after every successful
                                           operation or callback timeout.
@@ -406,33 +522,37 @@ class Instrument(object):
         if callback_timeout:
             self.callback_timeout = callback_timeout
         # Internal timeouts
-        self.timeout = self.callback_timeout
-        self.lock_timeout = self.callback_timeout
+        self.timeout_ms = int(self.callback_timeout * 1000)
+        self.lock_timeout_ms = int(self.callback_timeout * 1000)
         # Initialize
         self.link = None
         self.client = None
+        self.abort_client = None
         self.max_recv_size = 0
         # Connect to the client
-        self.init_client()
+        self.client = CoreClient(self.host, self.connection_timeout)
 
-    def init_client(self):
-        """Initialize the client connection."""
-        if self.connection_timeout is None:
-            self.client = CoreClient(self.host)
-        else:
-            timeout_s = self.connection_timeout * 0.001
-            self.client = CoreClient(self.host, timeout_s)
+    def __del__(self):
+        self.close()
+
+    # Open/close commands
 
     def open(self):
         """Open connection to VXI-11 instrument"""
+        # Already open
+        if self.link is not None:
+            return
         # Initialize client
-        self.init_client()
+        if not self.client:
+            self.client = CoreClient(self.host, self.connection_timeout)
         # Create link
         error, link, abort_port, max_recv_size = self.client.create_link(
-            self.client_id, 0, self.lock_timeout, self.name.encode("utf-8"))
+            self.client_id, 0, self.lock_timeout_ms, self.name.encode("utf-8"))
         # Raise error
         if error:
             raise Vxi11Exception(error, 'open')
+        # Initialize abort client
+        self.abort_client = AbortClient(self.host, abort_port)
         # Save the link
         self.link = link
         self.max_recv_size = min(max_recv_size, 1073741824)
@@ -494,7 +614,6 @@ class Instrument(object):
                 self.open()
             # Init time
             start = time()
-            timeout_s = self.instrument_timeout * 0.001
             no_control = self.callback_timeout >= self.instrument_timeout
             # Loop over timeouts
             while True:
@@ -504,17 +623,13 @@ class Instrument(object):
                 except Vxi11Exception as exc:
                     # Time control
                     no_timeout = exc.err != ERR_IO_TIMEOUT
-                    expired = (time()-start) > timeout_s
+                    expired = time() > start + self.instrument_timeout
                     # Reraise exception
                     if no_control or no_timeout or expired:
                         raise
                     # Callback with exc
                     if self.callback:
                         self.callback(exc)
-                except socket.timeout:
-                    # A socket error corrupted the xid
-                    self.close(destroy_link=False)
-                    raise
                 else:
                     # Callback without exc
                     if self.callback:
@@ -544,20 +659,20 @@ class Instrument(object):
                 read_length = num
             # Read request
             error, reason, data = self.client.device_read(
-                self.link, read_length, self.timeout, self.lock_timeout, flags,
-                term_char)
+                self.link, read_length, self.timeout_ms, self.lock_timeout_ms,
+                flags, term_char)
             # Raise error
             if error:
                 raise Vxi11Exception(error, 'read')
             # Concatenate result
-            read_data += data
+            read_data.extend(data)
             # Break if enough data
             if 0 < num <= len(data):
                 break
             # Update remaining bytes to read
             num -= len(data)
         # Return result
-        return read_data
+        return bytes(read_data)
 
     @base_command
     def write_raw(self, data):
@@ -578,7 +693,7 @@ class Instrument(object):
             block = data[offset:offset+chunk]
             # Write request
             error, size = self.client.device_write(
-                self.link, self.timeout, self.lock_timeout, flags, block)
+                self.link, self.timeout_ms, self.lock_timeout_ms, flags, block)
             # Raise error
             if error:
                 raise Vxi11Exception(error, 'write')
@@ -590,7 +705,7 @@ class Instrument(object):
         """Read status byte command"""
         flags = 0
         error, stb = self.client.device_read_stb(
-            self.link, flags, self.lock_timeout, self.timeout)
+            self.link, flags, self.lock_timeout_ms, self.timeout_ms)
         if error:
             raise Vxi11Exception(error, 'read_stb')
         return stb
@@ -600,7 +715,7 @@ class Instrument(object):
         """Send trigger command"""
         flags = 0
         error = self.client.device_trigger(
-            self.link, flags, self.lock_timeout, self.timeout)
+            self.link, flags, self.lock_timeout_ms, self.timeout_ms)
         if error:
             raise Vxi11Exception(error, 'trigger')
 
@@ -609,7 +724,7 @@ class Instrument(object):
         """Send clear command"""
         flags = 0
         error = self.client.device_clear(
-            self.link, flags, self.lock_timeout, self.timeout)
+            self.link, flags, self.lock_timeout_ms, self.timeout_ms)
         if error:
             raise Vxi11Exception(error, 'clear')
 
@@ -618,7 +733,7 @@ class Instrument(object):
         """Send remote command"""
         flags = 0
         error = self.client.device_remote(
-            self.link, flags, self.lock_timeout, self.timeout)
+            self.link, flags, self.lock_timeout_ms, self.timeout_ms)
         if error:
             raise Vxi11Exception(error, 'remote')
 
@@ -627,7 +742,7 @@ class Instrument(object):
         """Send local command"""
         flags = 0
         error = self.client.device_local(
-            self.link, flags, self.lock_timeout, self.timeout)
+            self.link, flags, self.lock_timeout_ms, self.timeout_ms)
         if error:
             raise Vxi11Exception(error, 'local')
 
@@ -635,7 +750,7 @@ class Instrument(object):
     def lock(self):
         """Send lock command"""
         flags = 0
-        error = self.client.device_lock(self.link, flags, self.lock_timeout)
+        error = self.client.device_lock(self.link, flags, self.lock_timeout_ms)
         if error:
             raise Vxi11Exception(error, 'lock')
 
@@ -645,3 +760,10 @@ class Instrument(object):
         error = self.client.device_unlock(self.link)
         if error:
             raise Vxi11Exception(error, 'unlock')
+
+    @base_command
+    def abort(self):
+        """Asynchronous abort command"""
+        error = self.abort_client.device_abort(self.link)
+        if error:
+            raise Vxi11Exception(error, 'abort')
