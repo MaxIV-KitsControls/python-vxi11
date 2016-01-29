@@ -529,8 +529,6 @@ class Instrument(object):
         self.client = None
         self.abort_client = None
         self.max_recv_size = 0
-        # Connect to the client
-        self.client = CoreClient(self.host, self.connection_timeout)
 
     def __del__(self):
         self.close()
@@ -544,7 +542,8 @@ class Instrument(object):
             return
         # Initialize client
         if not self.client:
-            self.client = CoreClient(self.host, self.connection_timeout)
+            self.client = CoreClient(
+                self.host, timeout=self.connection_timeout)
         # Create link
         error, link, abort_port, max_recv_size = self.client.create_link(
             self.client_id, 0, self.lock_timeout_ms, self.name.encode("utf-8"))
