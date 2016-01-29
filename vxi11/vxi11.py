@@ -644,7 +644,7 @@ class Instrument(object):
     def read_raw(self, num=-1):
         """Read binary data from instrument"""
         # Initialize
-        flags, reason, read_data = 0, 0, b''
+        flags, reason, read_data = 0, 0, bytearray()
         read_length = self.max_recv_size
         # Get terminator
         term_char = 0
